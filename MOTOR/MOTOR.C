@@ -1,0 +1,402 @@
+#include "motor.h"
+#include "global.h"
+#include "sensorless.h"
+#include "main.h"
+
+Motor_Type Motor;
+extern System_Type System;
+extern uint16_t SampleData[5]; 
+
+void Motor_RunMachine(void)
+{
+  signed short sTemp16;
+  unsigned short Temp16;	
+	
+	switch(Motor.RunState)
+	{
+		case STOP_STATE:
+			/* 进入初始停止状态 */
+			Motor.RunState = ORIENT_INIT_STATE;
+			Motor.Phase		 = 0;
+			Motor.Duty		 = DUTY_MIN;
+		break;
+		
+		case ORIENT_INIT_STATE:
+			/* 进入预定位初始化状态，定位到AB相 */
+			Motor.Phase = Motor_NewPhaseValueGet(Motor.Phase);
+			Motor_ChangePhase(Motor.Phase);
+			Motor.RunState = ORIENT_END_STATE;
+		break;
+		
+		case ORIENT_END_STATE:	//进入预定位结束状态
+			System.Orient_Time++;
+			if(System.OverTurn_Flag == 0)
+			{
+				System.OverTurn_Flag = 1;
+				LEDON;
+			}
+			else
+			{
+				System.OverTurn_Flag = 0;
+				LEDOFF;
+			}
+			if(System.Orient_Time > 500)
+			{
+				/* 进行强拖参数初始化 */
+				Motor.Phase		 							 = 2;
+				Motor.ForceState 						 = 1;
+				Motor.DemagnetizationTimeCnt = 3;
+				Motor.ForceRunTimeBase 			 = TIME_MAX;
+				Motor.Duty 									 = DUTY_MIN;
+				Motor.TerminalVoltageMax 		 = 0;
+        Motor.TerminalVoltageMin 		 = 3708;
+
+				Motor.RunState = FORCE_RUN_STATE;
+			}
+		break;
+		
+		case FORCE_RUN_STATE:		//进入强拖运行状态
+			Motor.ForceRunTimeCnt++;
+			switch(Motor.ForceState)
+			{
+				case 1:
+					if(Motor.DemagnetizationTimeCnt > 0)
+					{
+						Motor.DemagnetizationTimeCnt--;
+					}
+					else
+					{
+						Motor.DemagnetizationTimeCnt = 3;
+						Motor.ForceState = 2;
+					}
+				break;
+				
+				case 2:
+					Motor.Phase = Motor_NewPhaseValueGet(Motor.Phase);
+					Motor_ChangePhase(Motor.Phase);
+					Motor.ForceRunTimeCnt = 0;
+					Motor.ForceState = 3;
+				break;
+					
+				case 3:
+					TerminalVoltageGet();
+//					Motor.Vbus = (unsigned int)(SampleData[0]*12);
+//					Motor.VbusZcp = Motor.Vbus >> 1; //1/2Vbus
+				
+//					if(Motor.Slope)
+//					{
+//							if(Motor.TerminalVoltage >= Motor.VbusZcp) //过零点
+//							{
+//									//TEST_PIN_HIGH;
+//									if(Motor.TerminalVoltage < Motor.TerminalVoltageMin) //更新阈值
+//									{
+//											Motor.TerminalVoltageMin = Motor.TerminalVoltage;
+//									}
+//									sTemp16 = Motor.TerminalVoltage - Motor.TerminalVoltageMin;
+//									Temp16 = Motor.Vbus * 0.05; //Vbus * N% 5%
+//									
+//									if(sTemp16 >= Temp16) //换相
+//									{
+//											Motor.ForceState = 1;
+//											//Motor.ZeroPointCount ++;
+//									}
+//							}
+//					}
+//					else
+//					{
+//							if(Motor.TerminalVoltage <= Motor.VbusZcp) //过零点
+//							{
+//									//TEST_PIN_LOW;
+//									if(Motor.TerminalVoltage > Motor.TerminalVoltageMax) //更新阈值
+//									{
+//											Motor.TerminalVoltageMax = Motor.TerminalVoltage;
+//									}
+//									sTemp16 = Motor.TerminalVoltageMax - Motor.TerminalVoltage;
+//									Temp16 = (Motor.Vbus * PHASE_N_FACTOR) >> 16; //Vbus * N% 5%
+//									
+//									if(sTemp16 >= Temp16) //换相
+//									{
+//											Motor.ForceState = 1;
+//									}
+//							}
+//					}
+				
+					if(Motor.ForceRunTimeCnt > Motor.ForceRunTimeBase)
+					{
+						Motor.ForceState = 4;
+					}
+					
+					if(Motor.TerminalVoltage > 500)
+					{
+						Motor.DetectBEMF_Times++;
+						if(Motor.DetectBEMF_Times > 50000)
+						{
+							Motor.ForceState = 5;
+						}
+					}
+				break;
+				
+				case 4:
+					Motor.Duty++;
+					if(Motor.Duty > DUTY_MAX)
+					{
+						Motor.Duty = DUTY_MAX;
+					}
+					Motor.ForceRunTimeBase--;
+					if(Motor.ForceRunTimeBase < TIME_MIN)
+					{
+						Motor.ForceRunTimeBase = TIME_MIN;
+					}
+					Motor.ForceState = 1;
+				break;
+					
+				case 5:
+					Motor.Phase = Motor_NewPhaseValueGet(Motor.Phase);
+					Motor_ChangePhase(Motor.Phase);
+					Motor.DemagnetizationTimeCnt = 3;
+					Motor.SensorlessState = 1;
+					
+					CW_BTIM2->CNT = 0;
+					Motor.RunState = SENSORLESS_STATE;
+				break;
+			}
+		break;
+		
+		case SENSORLESS_STATE: //进入无感方波运行状态
+			switch(Motor.SensorlessState)
+			{
+				case 1:
+					if(Motor.DemagnetizationTimeCnt > 0)
+					{
+						Motor.DemagnetizationTimeCnt--;
+					}
+					else
+					{
+						Motor.DemagnetizationTimeCnt = 5;
+						//Motor.DemagnetizationTimeCnt = DemagnetizationTimeSet(Motor.Speed);
+						Motor.SensorlessState = 2;
+					}
+				break;
+					
+				case 2:
+					TerminalVoltageGet();
+					Motor.Vbus = SampleData[0]*1;
+					Motor.VbusZcp = Motor.Vbus >> 1; //1/2Vbus
+				
+					if(Motor.Slope)
+					{
+						if(Motor.TerminalVoltage >= Motor.VbusZcp)
+						{
+							BTIM_Cmd(CW_BTIM2, DISABLE);
+							Motor.CeventTime = (CW_BTIM2->CNT)>>1;
+							CW_BTIM2->CNT = 0;
+							BTIM_Cmd(CW_BTIM2, ENABLE);
+							
+							CW_BTIM3->CNT = 0;
+							CW_BTIM3->ARR = Motor.CeventTime;
+							BTIM_ClearITPendingBit(CW_BTIM3, BTIM_IT_UPDATE);
+							BTIM_Cmd(CW_BTIM3, ENABLE);
+							
+							Motor.SensorlessState = 3;
+						}
+					}
+					else
+					{
+						if(Motor.TerminalVoltage <= Motor.VbusZcp)
+						{
+							BTIM_Cmd(CW_BTIM2, DISABLE);
+							Motor.CeventTime = (CW_BTIM2->CNT)>>1;
+							CW_BTIM2->CNT = 0;
+							BTIM_Cmd(CW_BTIM2, ENABLE);
+							
+							CW_BTIM3->CNT = 0;
+							CW_BTIM3->ARR = Motor.CeventTime;
+							BTIM_ClearITPendingBit(CW_BTIM3, BTIM_IT_UPDATE);
+							BTIM_Cmd(CW_BTIM3, ENABLE);
+							
+							Motor.SensorlessState = 3;
+						}
+					}
+				break;
+					
+				case 3:
+					/* 进入速度闭环 */
+					GTIM_Cmd(CW_GTIM1, ENABLE);
+				break;
+			}
+		break;
+		
+		default:
+			//电机停转
+		break;
+	}
+}
+
+void TerminalVoltageGet(void)
+{
+	switch(Motor.Phase)
+	{
+		case 1:
+			Motor.Slope = 0;
+			Motor.TerminalVoltage = SampleData[3];
+		break;
+		
+		case 2:
+			Motor.Slope = 1;
+			Motor.TerminalVoltage = SampleData[2];
+		break;
+		
+		case 3:
+			Motor.Slope = 0;
+			Motor.TerminalVoltage = SampleData[1];
+		break;
+		
+		case 4:
+			Motor.Slope = 1;
+			Motor.TerminalVoltage = SampleData[3];
+		break;
+		
+		case 5:
+			Motor.Slope = 0;
+			Motor.TerminalVoltage = SampleData[2];
+		break;
+		
+		case 6:
+			Motor.Slope = 1;
+			Motor.TerminalVoltage = SampleData[1];
+		break;
+	}
+}
+
+unsigned char Motor_NewPhaseValueGet(unsigned char OldPhaseValue)
+{
+	
+	unsigned char NewPhaseValue;
+	
+	NewPhaseValue = OldPhaseValue+1;
+	if(NewPhaseValue > 6)
+	{
+		NewPhaseValue=1;
+	}
+	
+	return NewPhaseValue;
+}
+
+void Motor_ChangePhase(unsigned char NowPhaseValue)
+{
+	/* 当前相序为逆时针转动 */
+	switch(NowPhaseValue)
+	{
+		case 1:
+			//AB
+			ATIM_SetCompare1(0);
+			ATIM_SetCompare2(0);
+			ATIM_SetCompare3(Motor.Duty);
+			PWM_AL_OFF;
+			PWM_BL_ON;
+			PWM_CL_OFF;
+		break;
+		
+		case 2:
+			//AC
+			ATIM_SetCompare1(0);
+			ATIM_SetCompare2(0);
+			ATIM_SetCompare3(Motor.Duty);
+			PWM_AL_OFF;
+			PWM_BL_OFF;
+			PWM_CL_ON;
+		break;
+		
+		case 3:
+			//BC
+			ATIM_SetCompare1(0);
+			ATIM_SetCompare2(Motor.Duty);
+			ATIM_SetCompare3(0);
+			PWM_AL_OFF;
+			PWM_BL_OFF;
+			PWM_CL_ON;
+		break;
+		
+		case 4:
+			//BA
+			ATIM_SetCompare1(0);
+			ATIM_SetCompare2(Motor.Duty);
+			ATIM_SetCompare3(0);
+			PWM_AL_ON;
+			PWM_BL_OFF;
+			PWM_CL_OFF;
+		break;
+		
+		case 5:
+			//CA
+			ATIM_SetCompare1(Motor.Duty);
+			ATIM_SetCompare2(0);
+			ATIM_SetCompare3(0);
+			PWM_AL_ON;
+			PWM_BL_OFF;
+			PWM_CL_OFF;
+		break;
+		
+		case 6:
+			//CB
+			ATIM_SetCompare1(Motor.Duty);
+			ATIM_SetCompare2(0);
+			ATIM_SetCompare3(0);
+			PWM_AL_OFF;
+			PWM_BL_ON;
+			PWM_CL_OFF;
+		break;
+		
+		default:
+			//电机停转
+		break;
+	}
+}
+
+void Motor_SpeedClc(unsigned char NowPhaseValue ,unsigned int RunTime)
+{
+	switch(NowPhaseValue)
+	{
+		case 1:
+			Motor.SixTyRunTime[0] = RunTime;
+		break;
+		
+		case 2:
+			Motor.SixTyRunTime[1] = RunTime;
+		break;
+		
+		case 3:
+			Motor.SixTyRunTime[2] = RunTime;
+		break;
+		
+		case 4:
+			Motor.SixTyRunTime[3] = RunTime;
+		break;
+		
+		case 5:
+			Motor.SixTyRunTime[4] = RunTime;
+		break;
+		
+		case 6:
+			Motor.SixTyRunTime[5] = RunTime;
+			Motor.Speed_u32 = Motor.SixTyRunTime[0]+Motor.SixTyRunTime[1]+Motor.SixTyRunTime[2]+
+												Motor.SixTyRunTime[3]+Motor.SixTyRunTime[4]+Motor.SixTyRunTime[5];
+		break;
+	}
+}
+
+unsigned char DemagnetizationTimeSet(unsigned int SpeedNow)
+{
+	unsigned char DemagnetizationTime;
+	
+	if(SpeedNow < 1000)
+	{
+		DemagnetizationTime = 3;
+	}
+	else
+	{
+		DemagnetizationTime = 3+(SpeedNow-1000)/1000;
+	}
+	
+	return DemagnetizationTime;
+}
