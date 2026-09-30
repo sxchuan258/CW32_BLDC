@@ -32,8 +32,7 @@ void ADC_IRQHandler(void)
 			System.OverTurn_Flag = 0;
 			LEDOFF;
 		}
-		
-		//Motor_RunMachine();
+
 		MotorControl_StateMachine();
 	}
 }

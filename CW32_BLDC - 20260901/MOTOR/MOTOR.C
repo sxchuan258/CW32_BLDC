@@ -4,9 +4,9 @@
 #include "main.h"
 #include "Control.h"
 
-Motor_Type Motor;
-extern System_Type System;
-extern uint16_t 	 SampleData[5]; 
+Motor_Type 					Motor;
+extern System_Type	System;
+extern uint16_t 		SampleData[5]; 
 
 void TerminalVoltageGet(void)
 {
@@ -124,7 +124,12 @@ void Motor_ChangePhase(unsigned char NowPhaseValue)
 		break;
 		
 		default:
-			//µç»úÍ£×ª
+			GTIM_SetCompare1(CW_GTIM1 ,0);
+			GTIM_SetCompare2(CW_GTIM1 ,0);
+			GTIM_SetCompare3(CW_GTIM1 ,0);
+			PWM_AL_OFF;
+			PWM_BL_OFF;
+			PWM_CL_OFF;
 		break;
 	}
 }
